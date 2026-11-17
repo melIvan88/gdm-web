@@ -4,7 +4,9 @@ const fs = require('fs');
 const [,, inp, outp] = process.argv;
 let s = fs.readFileSync(inp, 'utf8');
 
-if (s.indexOf("notes.create") >= 0) { fs.writeFileSync(outp, s); console.log('ALREADY'); process.exit(0); }
+const hasNotes = s.indexOf("notes.create") >= 0;
+const hasSchema = s.indexOf("admin.schema") >= 0;
+if (hasNotes && hasSchema) { fs.writeFileSync(outp, s); console.log('ALREADY'); process.exit(0); }
 
 const SQL = `
 const SQL_007 = \`
@@ -48,6 +50,7 @@ const N_INS = 'id, owner, side, big, title, body, photos, vkey, ckey, created_at
 `;
 
 // 1) put the SQL and columns just above the handler
+if (!hasNotes) {
 const hAt = s.indexOf('export const handler');
 if (hAt < 0) { console.error('no handler'); process.exit(1); }
 s = s.slice(0, hAt) + SQL + '\n' + s.slice(hAt);
@@ -102,6 +105,28 @@ const notesWrite =
   "  return out(200, { ok: true });\n" +
   "}\n";
 s = s.replace(addAnchor, notesWrite + addAnchor);
+}
+
+
+
+// A read-only listing of what the database holds, so the project record can be written from facts.
+if (!hasSchema) {
+  const mk2 = "const method = event.requestContext?.http?.method || 'POST';";
+  const at2 = s.indexOf(mk2);
+  if (at2 >= 0) {
+    s = s.slice(0, at2) +
+      "if (!event.requestContext && event && event.action === 'admin.schema') {\n" +
+      "  const c = await (await db()).connect();\n" +
+      "  try {\n" +
+      "    const cols = await c.query(\"select table_name, column_name, data_type, is_nullable, column_default from information_schema.columns where table_schema = 'app' order by table_name, ordinal_position\");\n" +
+      "    const cnt = await c.query(\"select relname as t, n_live_tup as rows from pg_stat_user_tables where schemaname = 'app' order by relname\");\n" +
+      "    const fns = await c.query(\"select p.proname as name from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname = 'app' order by 1\");\n" +
+      "    const pol = await c.query(\"select tablename, policyname, cmd from pg_policies where schemaname = 'app' order by tablename, policyname\");\n" +
+      "    return { ok: true, columns: cols.rows, counts: cnt.rows, functions: fns.rows.map((r) => r.name), policies: pol.rows };\n" +
+      "  } finally { c.release(); }\n" +
+      "}\n" + s.slice(at2);
+  }
+}
 
 fs.writeFileSync(outp, s);
 console.log('PATCHED', s.length);
